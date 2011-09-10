@@ -2,6 +2,9 @@
 #define SAMPLE_MODE 2
 #define TRIGGER_MODE 3
 
+//
+//Change the sampling mode below by uncommenting the line you want.  Make sure only one line is uncommented.
+//
 //byte dataMode = LOGGING_MODE; //continuous sampling every 200ms, output in CSV format
 //byte dataMode = SAMPLE_MODE; //output sampled and logged every time the sample button is pressed
 byte dataMode = TRIGGER_MODE; //output sampled and logged every time the 12v input is triggered.

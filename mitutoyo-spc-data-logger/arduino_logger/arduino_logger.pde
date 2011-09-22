@@ -1,4 +1,5 @@
 #include <EEPROM.h>
+#include <SD.h>
 
 #define SAMPLE_MODE 1
 #define TRIGGER_MODE 2
@@ -31,6 +32,10 @@ const byte mode_pin = 9;
 const byte sample_pin = 46;
 const byte trigger_pin = 41;
 const byte chmod_pin = 45;
+
+//sdcard stuff.
+const byte chipSelect = 49;
+File dataFile;
 
 //data from the input
 volatile byte myNibbles[NUM_INPUTS][13];
@@ -71,8 +76,10 @@ void setup()
   pinMode(trigger_pin, INPUT);
   pinMode(chmod_pin, INPUT);
 
+  initialize_sdcard();
+
   if (channelEnabled[0])
-  	attachInterrupt(clock_interrupts[0], read_spc_0, FALLING);
+    attachInterrupt(clock_interrupts[0], read_spc_0, FALLING);
   if (channelEnabled[1])
     attachInterrupt(clock_interrupts[1], read_spc_1, FALLING);
   if (channelEnabled[2])
@@ -84,17 +91,17 @@ void setup()
   if (channelEnabled[5])
     attachInterrupt(clock_interrupts[5], read_spc_3, FALLING);
 
-	for (byte i=0; i<NUM_INPUTS; i++)
-	{
-		if (channelEnabled[i])
-		{
-		    resetSPCData(i);
+  for (byte i=0; i<NUM_INPUTS; i++)
+  {
+    if (channelEnabled[i])
+    {
+      resetSPCData(i);
 
-		    pinMode(data_pins[i], INPUT);
-		    pinMode(request_pins[i], OUTPUT);
-		    digitalWrite(request_pins[i], HIGH);		
-		}
-	}
+      pinMode(data_pins[i], INPUT);
+      pinMode(request_pins[i], OUTPUT);
+      digitalWrite(request_pins[i], HIGH);		
+    }
+  }
 
   fade_led(error_pin, 1000);
   fade_led(read_pin, 1000);
@@ -108,20 +115,20 @@ void setup()
 
 void fade_led(byte pin, int milliseconds)
 {
-	int delayTime = milliseconds / (512);
-	
-	for (byte i=0; i<255; i++)
-	{
-		analogWrite(pin, i);
-		delay(delayTime);
-	}
+  int delayTime = milliseconds / (512);
 
-	for (byte i=255; i>0; i--)
-	{
-		analogWrite(pin, i);
-		delay(delayTime);
-	}
-        analogWrite(pin, 0);
+  for (byte i=0; i<255; i++)
+  {
+    analogWrite(pin, i);
+    delay(delayTime);
+  }
+
+  for (byte i=255; i>0; i--)
+  {
+    analogWrite(pin, i);
+    delay(delayTime);
+  }
+  analogWrite(pin, 0);
 }
 
 unsigned long lastPrint = 0;
@@ -130,8 +137,8 @@ void loop()
 {
   for (byte i=0; i<NUM_INPUTS; i++)
   {
-	if (channelEnabled[i])
-	  parseSPCData(0);
+    if (channelEnabled[i])
+      parseSPCData(0);
   }
 
   if (dataMode == LOGGING_MODE)
@@ -145,47 +152,68 @@ void loop()
   {
     if (!digitalRead(sample_pin))
     {
-	    printCSVLine();
-	    while (!digitalRead(sample_pin))
-	      delay(100);
+      printCSVLine();
+      while (!digitalRead(sample_pin))
+        delay(100);
     }
   }
   else if (dataMode == TRIGGER_MODE)
   {
     if (!digitalRead(trigger_pin))
     {
-	   printCSVLine();
-	   while (!digitalRead(trigger_pin))
-	    delay(10);
+      printCSVLine();
+      while (!digitalRead(trigger_pin))
+        delay(10);
+    }
+  }
+  else if (dataMode == SDCARD_MODE)
+  {
+    // if the file is available, write to it:
+    if (dataFile)
+    {
+      String dataString = getCSVLine();
+
+      dataFile.println(dataString);
+
+      digitalWrite(status_pin, HIGH);
+      delay(1);
+      digitalWrite(status_pin, LOW);
+    }
+    else
+    {
+      initialize_sdcard();
+
+      if (!dataFile)
+        delay(250);
     }
   }
 
   if (!digitalRead(chmod_pin))
   {
-	dataMode++;
+    dataMode++;
 
     update_data_mode();
 
-	EEPROM.write(MODE_ADDRESS, dataMode);
-	
-	for (int i=0; i<dataMode; i++)
-		fade_led(mode_pin, 1000);
-	
+    EEPROM.write(MODE_ADDRESS, dataMode);
+
+    for (int i=0; i<dataMode; i++)
+      fade_led(mode_pin, 1000);
+
     while (!digitalRead(chmod_pin))
-	  delay(100);
+      delay(100);
   }
 
 }
 
 void update_data_mode()
 {
-	if (dataMode > 4)
-      dataMode = 1;
+  if (dataMode > 4)
+    dataMode = 1;
 
   if (dataMode == SAMPLE_MODE)
-	Serial.println("Manual Sampling Mode");
+    Serial.println("Manual Sampling Mode");
   else if (dataMode == TRIGGER_MODE)
-	Serial.println("External Trigger Mode");
+    Serial.println("External Trigger Mode");
   else if (dataMode == LOGGING_MODE)
     Serial.println("Continuous Logging Mode");
   else if (dataMode == SDCARD_MODE)
@@ -199,14 +227,19 @@ void printCSVHeader()
 
   for (byte i=0; i<NUM_INPUTS; i++)
   {
-  	if (channelEnabled[i])
-	{
-		Serial.print("CH");
-		Serial.print(i+1, DEC);
-		Serial.print(", SAMPLE#, ");
-	}
+    if (channelEnabled[i])
+    {
+      Serial.print("CH");
+      Serial.print(i+1, DEC);
+      Serial.print(", SAMPLE#, ");
+    }
   }
   Serial.println();  
+}
+
+String getCSVLine()
+{
+  return "soon.";  
 }
 
 void printCSVLine()
@@ -216,8 +249,8 @@ void printCSVLine()
 
   for (byte i=0; i<NUM_INPUTS; i++)
   {
-  	if (channelEnabled[i])
-	{
+    if (channelEnabled[i])
+    {
       printSPCData(i);
       Serial.print(", ");
     }
@@ -290,21 +323,21 @@ void readSPCData(byte channel)
 
   lastClock[channel] = millis();
 
-    if (bitIndex[channel] == 52)
-      digitalWrite(request_pins[channel], LOW);
+  if (bitIndex[channel] == 52)
+    digitalWrite(request_pins[channel], LOW);
 }
 
 byte parseSPCData(byte channel)
 {
   if (channelEnabled[channel])
   {
-//    if (millis() - lastClock[channel] > 500)
-//    {
-//      resetSPCData(channel);
-//	digitalWrite(status_pin, HIGH);
-//	delay(1);
-//  	digitalWrite(status_pin, LOW);
-//    }
+    //    if (millis() - lastClock[channel] > 500)
+    //    {
+    //      resetSPCData(channel);
+    //	digitalWrite(status_pin, HIGH);
+    //	delay(1);
+    //  	digitalWrite(status_pin, LOW);
+    //    }
 
     //  Serial.println("Raw:");
     for (byte i=0; i<52; i++)
@@ -364,9 +397,9 @@ byte parseSPCData(byte channel)
 
           resetSPCData(channel);
 
-		digitalWrite(error_pin, HIGH);
-		delay(1);
-	  	digitalWrite(error_pin, LOW);
+          digitalWrite(error_pin, HIGH);
+          delay(1);
+          digitalWrite(error_pin, LOW);
 
 
           return 2;
@@ -394,9 +427,9 @@ byte parseSPCData(byte channel)
 
         readings[channel]++;
 
-		digitalWrite(read_pin, HIGH);
-		delay(1);
-	  	digitalWrite(read_pin, LOW);
+        digitalWrite(read_pin, HIGH);
+        delay(1);
+        digitalWrite(read_pin, LOW);
       }
 
       resetSPCData(channel);
@@ -421,5 +454,23 @@ void triggerSample()
   sampleFlag = true;
 }
 
+void initialize_sdcard()
+{
+  // make sure that the default chip select pin is set to
+  // output, even if you don't use it:
+  pinMode(53, OUTPUT);
 
+  // see if the card is present and can be initialized:
+  if (!SD.begin(chipSelect))
+  {
+    Serial.println("Card failed, or not present");
+    // don't do anything more:
+    return;
+  }
+  Serial.println("SD card initialized.");
+
+  dataFile = SD.open("datalog.txt", FILE_WRITE);
+  if (!dataFile)
+    Serial.println("SD error opening datalog.txt");
+}
 

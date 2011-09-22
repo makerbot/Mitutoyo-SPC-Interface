@@ -1,47 +1,55 @@
-#define LOGGING_MODE 1
-#define SAMPLE_MODE 2
-#define TRIGGER_MODE 3
+#define SAMPLE_MODE 1
+#define TRIGGER_MODE 2
+#define LOGGING_MODE 3
+#define SDCARD_MODE 4
 
 //
 //Change the sampling mode below by uncommenting the line you want.  Make sure only one line is uncommented.
 //
+byte dataMode = SAMPLE_MODE; //output sampled and logged every time the sample button is pressed
+//byte dataMode = TRIGGER_MODE; //output sampled and logged every time the 12v input is triggered.
 //byte dataMode = LOGGING_MODE; //continuous sampling every 200ms, output in CSV format
-//byte dataMode = SAMPLE_MODE; //output sampled and logged every time the sample button is pressed
-byte dataMode = TRIGGER_MODE; //output sampled and logged every time the 12v input is triggered.
 
-#define NUM_INPUTS 4
+#define NUM_INPUTS 6
 
 const byte clock_interrupts[NUM_INPUTS] = {
-  1, 0, 5, 4};
+  1, 0, 5, 4, 3, 2}; // these are the interrupt ids.  actual pin #s are: 3, 2, 18, 19, 20, 21
 const byte data_pins[NUM_INPUTS] = {
-  4, 15, 17, 21};
+  4, 15, 17, 23, 27, 29};
 const byte request_pins[NUM_INPUTS] = {
-  5, 14, 16, 22};
-const byte sense_pins[NUM_INPUTS] = {
-  0, 1, 2, 3};
+  35, 36, 37, 38, 39, 40};
+
+const byte error_pin = 12;
+const byte read_pin = 11;
+const byte status_pin = 10;
+const byte mode_pin = 9;
+
+const byte sample_pin = 46;
+const byte trigger_pin = 41;
+const byte chmod_pin = 45;
 
 //data from the input
 volatile byte myNibbles[NUM_INPUTS][13];
 volatile byte bitIndex[NUM_INPUTS] = {
-  0,0,0,0};
+  0,0,0,0,0,0};
 
 volatile byte myBits[NUM_INPUTS][52];
 
 byte channelEnabled[NUM_INPUTS] = {
-  1,0,0,0};
+  1,0,0,0,0,0};
 byte numberSign[NUM_INPUTS] = {
-  0,0,0,0};
+  0,0,0,0,0,0};
 byte digits[NUM_INPUTS][6];
 byte decimalPoint[NUM_INPUTS] = {
-  0,0,0,0};
+  0,0,0,0,0,0};
 byte units[NUM_INPUTS] = {
-  0,0,0,0};
+  0,0,0,0,0,0};
 
 unsigned int readings[NUM_INPUTS] = {
-  0,0,0,0};
+  0,0,0,0,0,0};
 
 volatile unsigned long lastClock[NUM_INPUTS] = {
-  0,0,0,0 
+  0,0,0,0,0,0
 };
 
 volatile boolean sampleFlag = false;
@@ -50,56 +58,114 @@ void setup()
 {
   delay(1000);
   Serial.begin(115200);
-  Serial.println("MakerBot Mitutoyo SPC Logger v1.0");
+  Serial.println("MakerBot Mitutoyo SPC Logger v2.0");
 
-  for (byte i=0; i<NUM_INPUTS; i++)
-  {
-    resetSPCData(i);
+  pinMode(sample_pin, INPUT);
+  pinMode(trigger_pin, INPUT);
+  pinMode(chmod_pin, INPUT);
 
-    pinMode(data_pins[i], INPUT);
+  if (channelEnabled[0])
+  	attachInterrupt(clock_interrupts[0], read_spc_0, FALLING);
+  if (channelEnabled[1])
+    attachInterrupt(clock_interrupts[1], read_spc_1, FALLING);
+  if (channelEnabled[2])
+    attachInterrupt(clock_interrupts[2], read_spc_2, FALLING);
+  if (channelEnabled[3])
+    attachInterrupt(clock_interrupts[3], read_spc_3, FALLING);
+  if (channelEnabled[4])
+    attachInterrupt(clock_interrupts[4], read_spc_3, FALLING);
+  if (channelEnabled[5])
+    attachInterrupt(clock_interrupts[5], read_spc_3, FALLING);
 
-    pinMode(request_pins[i], OUTPUT);
-    digitalWrite(request_pins[i], HIGH);
-  }
+	for (byte i=0; i<NUM_INPUTS; i++)
+	{
+		if (channelEnabled[i])
+		{
+		    resetSPCData(i);
 
-  attachInterrupt(clock_interrupts[0], read_spc_0, FALLING);
-  attachInterrupt(clock_interrupts[1], read_spc_1, FALLING);
-  attachInterrupt(clock_interrupts[2], read_spc_2, FALLING);
-  attachInterrupt(clock_interrupts[3], read_spc_3, FALLING);
+		    pinMode(data_pins[i], INPUT);
+		    pinMode(request_pins[i], OUTPUT);
+		    digitalWrite(request_pins[i], HIGH);		
+		}
+	}
 
-  if (dataMode == SAMPLE_MODE)
-    attachInterrupt(2, triggerSample, FALLING);
-  if (dataMode == TRIGGER_MODE)
-    attachInterrupt(3, triggerSample, FALLING);
+  fade_led(error_pin, 1000);
+  fade_led(read_pin, 1000);
+  fade_led(status_pin, 1000);
+  fade_led(mode_pin, 1000);
+
+  //digitalWrite(status_pin, HIGH);
 
   printCSVHeader();
+}
+
+void fade_led(byte pin, int milliseconds)
+{
+	int delayTime = milliseconds / (512);
+	
+	for (byte i=0; i<255; i++)
+	{
+		analogWrite(pin, i);
+		delay(delayTime);
+	}
+
+	for (byte i=255; i>0; i--)
+	{
+		analogWrite(pin, i);
+		delay(delayTime);
+	}
+        analogWrite(pin, 0);
 }
 
 unsigned long lastPrint = 0;
 
 void loop()
 {
-  parseSPCData(0);
-  parseSPCData(1);
-  parseSPCData(2);
-  parseSPCData(3);
+  for (byte i=0; i<NUM_INPUTS; i++)
+  {
+	if (channelEnabled[i])
+	  parseSPCData(0);
+  }
 
   if (dataMode == LOGGING_MODE)
   {
-    if ((millis() - lastPrint) > 200)
+    if ((millis() - lastPrint) > 100)
     {
       printCSVLine();
     }
   }
-  else if(dataMode == SAMPLE_MODE || dataMode == TRIGGER_MODE)
+  else if(dataMode == SAMPLE_MODE)
   {
-    if (sampleFlag)
+    if (!digitalRead(sample_pin))
     {
-      printCSVLine();
-      delay(200);
-      sampleFlag = false;
-    } 
+	    printCSVLine();
+	    while (!digitalRead(sample_pin))
+	      delay(100);
+    }
   }
+  else if (dataMode == TRIGGER_MODE)
+  {
+    if (!digitalRead(trigger_pin))
+    {
+	   printCSVLine();
+	   while (!digitalRead(trigger_pin))
+	    delay(10);
+    }
+  }
+
+  if (!digitalRead(chmod_pin))
+  {
+	dataMode++;
+	if (dataMode > 4)
+		dataMode = 1;
+	
+	for (int i=0; i<dataMode; i++)
+		fade_led(mode_pin, 1000);
+	
+    while (!digitalRead(chmod_pin))
+	  delay(100);
+  }
+
 }
 
 void printCSVHeader()
@@ -107,19 +173,15 @@ void printCSVHeader()
   Serial.print("Milliseconds");
   Serial.print(", ");
 
-  if (channelEnabled[0])
-    Serial.print("CH1, SAMPLE#, ");
-
-  if (channelEnabled[1])
-    Serial.print("CH2, SAMPLE#, ");
-
-  if (channelEnabled[2])
-    Serial.print("CH3, SAMPLE#, ");
-  if (channelEnabled[3])
+  for (byte i=0; i<NUM_INPUTS; i++)
   {
-    Serial.print("CH4, SAMPLE#");
+  	if (channelEnabled[i])
+	{
+		Serial.print("CH");
+		Serial.print(i+1, DEC);
+		Serial.print(", SAMPLE#, ");
+	}
   }
-
   Serial.println();  
 }
 
@@ -128,24 +190,13 @@ void printCSVLine()
   Serial.print(millis(), DEC);
   Serial.print(", ");
 
-  if (channelEnabled[0])
+  for (byte i=0; i<NUM_INPUTS; i++)
   {
-    printSPCData(0);
-    Serial.print(", ");
-  }
-  if (channelEnabled[1])
-  {
-    printSPCData(1);
-    Serial.print(", ");
-  }
-  if (channelEnabled[2])
-  {
-    printSPCData(2);
-    Serial.print(", ");
-  }
-  if (channelEnabled[3])
-  {
-    printSPCData(3);
+  	if (channelEnabled[i])
+	{
+      printSPCData(i);
+      Serial.print(", ");
+    }
   }
 
   Serial.println();
@@ -190,6 +241,16 @@ void read_spc_3()
   readSPCData(3);
 }
 
+void read_spc_4()
+{
+  readSPCData(4);
+}
+
+void read_spc_5()
+{
+  readSPCData(5);
+}
+
 void readSPCData(byte channel)
 {
   byte dataBit = digitalRead(data_pins[channel]);
@@ -205,16 +266,21 @@ void readSPCData(byte channel)
 
   lastClock[channel] = millis();
 
-  //  if (bitIndex[channel] == 52)
-  //    digitalWrite(request_pins[channel], LOW);
+    if (bitIndex[channel] == 52)
+      digitalWrite(request_pins[channel], LOW);
 }
 
 byte parseSPCData(byte channel)
 {
   if (channelEnabled[channel])
   {
-    if (millis() - lastClock[channel] > 100)
-      resetSPCData(channel);    
+//    if (millis() - lastClock[channel] > 500)
+//    {
+//      resetSPCData(channel);
+//	digitalWrite(status_pin, HIGH);
+//	delay(1);
+//  	digitalWrite(status_pin, LOW);
+//    }
 
     //  Serial.println("Raw:");
     for (byte i=0; i<52; i++)
@@ -273,6 +339,12 @@ byte parseSPCData(byte channel)
           //Serial.println(").");
 
           resetSPCData(channel);
+
+		digitalWrite(error_pin, HIGH);
+		delay(1);
+	  	digitalWrite(error_pin, LOW);
+
+
           return 2;
         }
       }
@@ -297,7 +369,12 @@ byte parseSPCData(byte channel)
         units[channel] = myNibbles[channel][12];
 
         readings[channel]++;
+
+		digitalWrite(read_pin, HIGH);
+		delay(1);
+	  	digitalWrite(read_pin, LOW);
       }
+
       resetSPCData(channel);
     }
   }
@@ -306,15 +383,13 @@ byte parseSPCData(byte channel)
 
 void resetSPCData(byte channel)
 {
-  digitalWrite(request_pins[channel], HIGH);
-
   bitIndex[channel] = 0;
   for (byte i=0; i<13; i++)
     myNibbles[channel][i] = 0;
   for (byte i=0; i<52; i++)
     myBits[channel][i] = 0;
 
-  digitalWrite(request_pins[channel], LOW);
+  digitalWrite(request_pins[channel], HIGH);
 }
 
 void triggerSample()

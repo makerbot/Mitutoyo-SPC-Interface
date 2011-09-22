@@ -1,7 +1,11 @@
+#include <EEPROM.h>
+
 #define SAMPLE_MODE 1
 #define TRIGGER_MODE 2
 #define LOGGING_MODE 3
 #define SDCARD_MODE 4
+
+#define MODE_ADDRESS 0
 
 //
 //Change the sampling mode below by uncommenting the line you want.  Make sure only one line is uncommented.
@@ -59,6 +63,9 @@ void setup()
   delay(1000);
   Serial.begin(115200);
   Serial.println("MakerBot Mitutoyo SPC Logger v2.0");
+
+  dataMode == EEPROM.read(MODE_ADDRESS);
+  update_data_mode();
 
   pinMode(sample_pin, INPUT);
   pinMode(trigger_pin, INPUT);
@@ -156,8 +163,10 @@ void loop()
   if (!digitalRead(chmod_pin))
   {
 	dataMode++;
-	if (dataMode > 4)
-		dataMode = 1;
+
+    update_data_mode();
+
+	EEPROM.write(MODE_ADDRESS, dataMode);
 	
 	for (int i=0; i<dataMode; i++)
 		fade_led(mode_pin, 1000);
@@ -166,6 +175,21 @@ void loop()
 	  delay(100);
   }
 
+}
+
+void update_data_mode()
+{
+	if (dataMode > 4)
+      dataMode = 1;
+
+  if (dataMode == SAMPLE_MODE)
+	Serial.println("Manual Sampling Mode");
+  else if (dataMode == TRIGGER_MODE)
+	Serial.println("External Trigger Mode");
+  else if (dataMode == LOGGING_MODE)
+    Serial.println("Continuous Logging Mode");
+  else if (dataMode == SDCARD_MODE)
+    Serial.println("SD Card Logging Mode");
 }
 
 void printCSVHeader()

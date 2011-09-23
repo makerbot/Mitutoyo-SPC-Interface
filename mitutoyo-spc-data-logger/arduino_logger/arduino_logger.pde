@@ -494,6 +494,11 @@ void initialize_sdcard()
     if (!SD.begin(chipSelect))
     {
       Serial.println("Card failed, or not present");
+
+			digitalWrite(error_pin, HIGH);
+			delay(1);
+			digitalWrite(error_pin, LOW);
+
       // don't do anything more:
       return;
     }
@@ -508,7 +513,13 @@ void initialize_sdcard()
 
   dataFile = SD.open(myFile, FILE_WRITE);
   if (!dataFile)
+	{
     Serial.println("SD error opening datalog.txt");
+
+		digitalWrite(error_pin, HIGH);
+		delay(1);
+		digitalWrite(error_pin, LOW);
+	}
 }
 
 char* generate_sd_filename()

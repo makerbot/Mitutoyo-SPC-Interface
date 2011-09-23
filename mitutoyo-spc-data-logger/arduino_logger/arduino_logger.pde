@@ -1,5 +1,6 @@
 #include <EEPROM.h>
 #include <SD.h>
+#include <stdio.h>
 
 #define SAMPLE_MODE 1
 #define TRIGGER_MODE 2
@@ -36,6 +37,8 @@ const byte chmod_pin = 45;
 //sdcard stuff.
 const byte chipSelect = 49;
 File dataFile;
+boolean sd_initialized = false;
+boolean sd_logging_enabled = false;
 
 //data from the input
 volatile byte myNibbles[NUM_INPUTS][13];
@@ -75,8 +78,6 @@ void setup()
   pinMode(sample_pin, INPUT);
   pinMode(trigger_pin, INPUT);
   pinMode(chmod_pin, INPUT);
-
-  initialize_sdcard();
 
   if (channelEnabled[0])
     attachInterrupt(clock_interrupts[0], read_spc_0, FALLING);
@@ -146,6 +147,8 @@ void loop()
     if ((millis() - lastPrint) > 100)
     {
       printCSVLine();
+
+      lastPrint = millis();
     }
   }
   else if(dataMode == SAMPLE_MODE)
@@ -168,23 +171,42 @@ void loop()
   }
   else if (dataMode == SDCARD_MODE)
   {
-    // if the file is available, write to it:
-    if (dataFile)
+    if (sd_logging_enabled)
     {
-      String dataString = getCSVLine();
+      // if the file is available, write to it:
+      if (dataFile)
+      {
+        if ((millis() - lastPrint) > 100)
+        {
+          dataFile.println(getCSVLine());
+          lastPrint = millis();
+        }
 
-      dataFile.println(dataString);
+        digitalWrite(status_pin, HIGH);
+        delay(1);
+        digitalWrite(status_pin, LOW);
+      }
+      else
+      {
+        initialize_sdcard();
 
-      digitalWrite(status_pin, HIGH);
-      delay(1);
-      digitalWrite(status_pin, LOW);
+        if (!dataFile)
+          delay(250);
+      }			
     }
-    else
-    {
-      initialize_sdcard();
 
-      if (!dataFile)
-        delay(250);
+    //sample pin will turn logging on or off.
+    if (!digitalRead(sample_pin))
+    {
+      sd_logging_enabled = !sd_logging_enabled;
+
+      if (sd_logging_enabled)
+        initialize_sdcard();
+      else if (dataFile)
+        dataFile.close();
+
+      while (!digitalRead(sample_pin))
+        delay(100);
     }
   }
 
@@ -202,7 +224,6 @@ void loop()
     while (!digitalRead(chmod_pin))
       delay(100);
   }
-
 }
 
 void update_data_mode()
@@ -220,62 +241,69 @@ void update_data_mode()
     Serial.println("SD Card Logging Mode");
 }
 
-void printCSVHeader()
+String getCSVHeader()
 {
-  Serial.print("Milliseconds");
-  Serial.print(", ");
+  String out = "Milliseconds, ";
 
   for (byte i=0; i<NUM_INPUTS; i++)
   {
     if (channelEnabled[i])
     {
-      Serial.print("CH");
-      Serial.print(i+1, DEC);
-      Serial.print(", SAMPLE#, ");
+      out += "CH";
+      out += String(i+1, DEC);
+      out += ", SAMPLE#, ";
     }
   }
-  Serial.println();  
+
+  return out;
+}
+
+void printCSVHeader()
+{
+  Serial.println(getCSVHeader());
 }
 
 String getCSVLine()
 {
-  return "soon.";  
-}
-
-void printCSVLine()
-{
-  Serial.print(millis(), DEC);
-  Serial.print(", ");
+  String out = String(millis(), DEC);
+  out += ", ";
 
   for (byte i=0; i<NUM_INPUTS; i++)
   {
     if (channelEnabled[i])
     {
-      printSPCData(i);
-      Serial.print(", ");
+      out += getSPCDataString(i);
+      out += ", ";
     }
   }
 
-  Serial.println();
-
-  lastPrint = millis();
+  return out;
 }
 
-void printSPCData(byte i)
+void printCSVLine()
 {
+  Serial.println(getCSVLine());
+}
+
+String getSPCDataString(byte i)
+{
+  String out;
+
   if (numberSign[i] == 8)
-    Serial.print("-");
+    out += "-";
   else
-    Serial.print("+");
+    out += "+";
 
   for (int j=0; j<6; j++)
   {
     if (6-j == decimalPoint[i])
-      Serial.print(".");
-    Serial.print(digits[i][j], DEC);
+      out += ".";
+    out += String(digits[i][j], DEC);
   }
-  Serial.print(", ");
-  Serial.print(readings[i], DEC);
+  out += ", ";
+  out += String(readings[i], DEC);
+
+  return out;
 }
 
 void read_spc_0()
@@ -460,17 +488,41 @@ void initialize_sdcard()
   // output, even if you don't use it:
   pinMode(53, OUTPUT);
 
-  // see if the card is present and can be initialized:
-  if (!SD.begin(chipSelect))
+  if (!sd_initialized)
   {
-    Serial.println("Card failed, or not present");
-    // don't do anything more:
-    return;
+    // see if the card is present and can be initialized:
+    if (!SD.begin(chipSelect))
+    {
+      Serial.println("Card failed, or not present");
+      // don't do anything more:
+      return;
+    }
+    Serial.println("SD card initialized.");
+    sd_initialized = true;		
   }
-  Serial.println("SD card initialized.");
 
-  dataFile = SD.open("datalog.txt", FILE_WRITE);
+  char* myFile = generate_sd_filename();
+
+  if (dataFile)
+    dataFile.close();
+
+  dataFile = SD.open(myFile, FILE_WRITE);
   if (!dataFile)
     Serial.println("SD error opening datalog.txt");
+}
+
+char* generate_sd_filename()
+{
+  char fname[13];
+
+  for (long i=10000; i<100000; i++)
+  {
+    sprintf(fname, "mt%i.log", i);
+
+    if (!SD.exists(fname))
+      return fname;
+  }
+
+  return fname;
 }
 

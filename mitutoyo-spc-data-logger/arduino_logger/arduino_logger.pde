@@ -7,14 +7,9 @@
 #define LOGGING_MODE 3
 #define SDCARD_MODE 4
 
-#define MODE_ADDRESS 0
+byte dataMode = 1;
 
-//
-//Change the sampling mode below by uncommenting the line you want.  Make sure only one line is uncommented.
-//
-byte dataMode = SAMPLE_MODE; //output sampled and logged every time the sample button is pressed
-//byte dataMode = TRIGGER_MODE; //output sampled and logged every time the 12v input is triggered.
-//byte dataMode = LOGGING_MODE; //continuous sampling every 200ms, output in CSV format
+#define MODE_ADDRESS 0
 
 #define NUM_INPUTS 6
 
@@ -39,6 +34,8 @@ const byte chipSelect = 49;
 File dataFile;
 boolean sd_initialized = false;
 boolean sd_logging_enabled = false;
+
+unsigned long lastPrint = 0;
 
 //data from the input
 volatile byte myNibbles[NUM_INPUTS][13];
@@ -68,11 +65,15 @@ volatile boolean sampleFlag = false;
 
 void setup()
 {
-  delay(1000);
   Serial.begin(115200);
   Serial.println("MakerBot Mitutoyo SPC Logger v2.0");
 
-  dataMode == EEPROM.read(MODE_ADDRESS);
+  dataMode = EEPROM.read(MODE_ADDRESS);
+	//Serial.print("EEPROM Read: ");
+	//Serial.print(MODE_ADDRESS, DEC);
+	//Serial.print(", ");
+	//Serial.println(dataMode, DEC);
+
   update_data_mode();
 
   pinMode(sample_pin, INPUT);
@@ -88,9 +89,17 @@ void setup()
   if (channelEnabled[3])
     attachInterrupt(clock_interrupts[3], read_spc_3, FALLING);
   if (channelEnabled[4])
-    attachInterrupt(clock_interrupts[4], read_spc_3, FALLING);
+    attachInterrupt(clock_interrupts[4], read_spc_4, FALLING);
   if (channelEnabled[5])
-    attachInterrupt(clock_interrupts[5], read_spc_3, FALLING);
+    attachInterrupt(clock_interrupts[5], read_spc_5, FALLING);
+
+  fade_led(error_pin, 512);
+  fade_led(read_pin, 512);
+  fade_led(status_pin, 512);
+  fade_led(mode_pin, 512);
+
+	if (dataMode != SDCARD_MODE)
+  	printCSVHeader();
 
   for (byte i=0; i<NUM_INPUTS; i++)
   {
@@ -103,15 +112,6 @@ void setup()
       digitalWrite(request_pins[i], HIGH);		
     }
   }
-
-  fade_led(error_pin, 1000);
-  fade_led(read_pin, 1000);
-  fade_led(status_pin, 1000);
-  fade_led(mode_pin, 1000);
-
-  //digitalWrite(status_pin, HIGH);
-
-  printCSVHeader();
 }
 
 void fade_led(byte pin, int milliseconds)
@@ -132,8 +132,6 @@ void fade_led(byte pin, int milliseconds)
   analogWrite(pin, 0);
 }
 
-unsigned long lastPrint = 0;
-
 void loop()
 {
   for (byte i=0; i<NUM_INPUTS; i++)
@@ -146,7 +144,8 @@ void loop()
   {
     if ((millis() - lastPrint) > 100)
     {
-      printCSVLine();
+			String line = getCSVLine();
+		  Serial.println(line);
 
       lastPrint = millis();
     }
@@ -155,7 +154,9 @@ void loop()
   {
     if (!digitalRead(sample_pin))
     {
-      printCSVLine();
+			String line = getCSVLine();
+		  Serial.println(line);
+
       while (!digitalRead(sample_pin))
         delay(100);
     }
@@ -164,7 +165,9 @@ void loop()
   {
     if (!digitalRead(trigger_pin))
     {
-      printCSVLine();
+			String line = getCSVLine();
+		  Serial.println(line);
+
       while (!digitalRead(trigger_pin))
         delay(10);
     }
@@ -216,7 +219,14 @@ void loop()
 
     update_data_mode();
 
+		//Serial.print("EEPROM Write: ");
+		//Serial.print(MODE_ADDRESS, DEC);
+		//Serial.print(", ");
+		//Serial.println(dataMode, DEC);
     EEPROM.write(MODE_ADDRESS, dataMode);
+
+		sd_initialized = false;
+		sd_logging_enabled = false;
 
     for (int i=0; i<dataMode; i++)
       fade_led(mode_pin, 1000);
@@ -249,9 +259,9 @@ String getCSVHeader()
   {
     if (channelEnabled[i])
     {
-      out += "CH";
+      out += String("CH");
       out += String(i+1, DEC);
-      out += ", SAMPLE#, ";
+      out += String(", SAMPLE#, ");
     }
   }
 
@@ -260,29 +270,27 @@ String getCSVHeader()
 
 void printCSVHeader()
 {
-  Serial.println(getCSVHeader());
+	String line = getCSVHeader();
+  Serial.println(line);
 }
 
 String getCSVLine()
 {
-  String out = String(millis(), DEC);
-  out += ", ";
+	long milliTime = millis();
+  String out = String(milliTime, DEC);
+  out += String(", ");
 
   for (byte i=0; i<NUM_INPUTS; i++)
   {
     if (channelEnabled[i])
     {
-      out += getSPCDataString(i);
-      out += ", ";
+			String spcOut = getSPCDataString(i);
+      out += spcOut;
+      out += String(", ");
     }
   }
 
   return out;
-}
-
-void printCSVLine()
-{
-  Serial.println(getCSVLine());
 }
 
 String getSPCDataString(byte i)
@@ -290,17 +298,17 @@ String getSPCDataString(byte i)
   String out;
 
   if (numberSign[i] == 8)
-    out += "-";
+    out += String("-");
   else
-    out += "+";
+    out += String("+");
 
   for (int j=0; j<6; j++)
   {
     if (6-j == decimalPoint[i])
-      out += ".";
+      out += String(".");
     out += String(digits[i][j], DEC);
   }
-  out += ", ";
+  out += String(", ");
   out += String(readings[i], DEC);
 
   return out;
@@ -357,7 +365,7 @@ void readSPCData(byte channel)
 
 byte parseSPCData(byte channel)
 {
-  if (channelEnabled[channel])
+  if (channelEnabled[channel] && bitIndex[channel] == 52)
   {
     //    if (millis() - lastClock[channel] > 500)
     //    {
@@ -429,7 +437,8 @@ byte parseSPCData(byte channel)
           delay(1);
           digitalWrite(error_pin, LOW);
 
-
+					triggerReading(channel);
+					
           return 2;
         }
       }
@@ -462,7 +471,10 @@ byte parseSPCData(byte channel)
 
       resetSPCData(channel);
     }
+
+		triggerReading(channel);
   }
+
   return 0;
 }
 
@@ -473,13 +485,11 @@ void resetSPCData(byte channel)
     myNibbles[channel][i] = 0;
   for (byte i=0; i<52; i++)
     myBits[channel][i] = 0;
-
-  digitalWrite(request_pins[channel], HIGH);
 }
 
-void triggerSample()
+void triggerReading(byte channel)
 {
-  sampleFlag = true;
+	digitalWrite(request_pins[channel], HIGH);
 }
 
 void initialize_sdcard()
@@ -506,15 +516,22 @@ void initialize_sdcard()
     sd_initialized = true;		
   }
 
-  char* myFile = generate_sd_filename();
-
   if (dataFile)
     dataFile.close();
-
-  dataFile = SD.open(myFile, FILE_WRITE);
+	
+	/*
+	//TOTALLY BUSTED.
+  String myFile = generate_sd_filename();
+	char charFileName[12];
+	myFile.toCharArray(charFileName, 12);
+  dataFile = SD.open(charFileName, FILE_WRITE);
+	*/
+	
+  dataFile = SD.open("mitutoyo.log", FILE_WRITE);
   if (!dataFile)
 	{
-    Serial.println("SD error opening datalog.txt");
+    Serial.print("SD error opening ");
+		//Serial.println(myFile);
 
 		digitalWrite(error_pin, HIGH);
 		delay(1);
@@ -522,18 +539,26 @@ void initialize_sdcard()
 	}
 }
 
-char* generate_sd_filename()
+//THIS IS COMPLETELY FUCKED.
+/*
+String generate_sd_filename()
 {
-  char fname[13];
-
-  for (long i=10000; i<100000; i++)
+	String fname;
+	
+  for (long i=10000; i<20000; i++)
   {
-    sprintf(fname, "mt%i.log", i);
+		fname = String("mt");
+		fname += String(i, DEC);
+		fname += String(".log");
 
-    if (!SD.exists(fname))
+		char charFileName[12];
+		fname.toCharArray(charFileName, 12);
+
+    if (!SD.exists(charFileName))
       return fname;
   }
 
   return fname;
 }
+*/
 

@@ -15,6 +15,8 @@ byte dataMode = 1;
 
 const byte clock_interrupts[NUM_INPUTS] = {
   1, 0, 5, 4, 3, 2}; // these are the interrupt ids.  actual pin #s are: 3, 2, 18, 19, 20, 21
+const byte clock_pins[NUM_INPUTS] = {
+  3, 2, 18, 19, 20, 21};
 const byte data_pins[NUM_INPUTS] = {
   4, 15, 17, 23, 27, 29};
 const byte request_pins[NUM_INPUTS] = {
@@ -42,10 +44,9 @@ volatile byte myNibbles[NUM_INPUTS][13];
 volatile byte bitIndex[NUM_INPUTS] = {
   0,0,0,0,0,0};
 
-volatile byte myBits[NUM_INPUTS][52];
-
 byte channelEnabled[NUM_INPUTS] = {
   1,0,0,0,0,0};
+
 byte numberSign[NUM_INPUTS] = {
   0,0,0,0,0,0};
 byte digits[NUM_INPUTS][6];
@@ -57,15 +58,11 @@ byte units[NUM_INPUTS] = {
 unsigned int readings[NUM_INPUTS] = {
   0,0,0,0,0,0};
 
-volatile unsigned long lastClock[NUM_INPUTS] = {
-  0,0,0,0,0,0
-};
-
 volatile boolean sampleFlag = false;
 
 void setup()
 {
-  Serial.begin(115200);
+  Serial.begin(57600);
   Serial.println("MakerBot Mitutoyo SPC Logger v2.0");
 
   dataMode = EEPROM.read(MODE_ADDRESS);
@@ -107,9 +104,10 @@ void setup()
     {
       resetSPCData(i);
 
+      pinMode(clock_pins[i], INPUT);
       pinMode(data_pins[i], INPUT);
       pinMode(request_pins[i], OUTPUT);
-      digitalWrite(request_pins[i], HIGH);		
+      digitalWrite(request_pins[i], LOW);
     }
   }
 }
@@ -134,18 +132,22 @@ void fade_led(byte pin, int milliseconds)
 
 void loop()
 {
+	unsigned long lastTrigger = 0;
+	int lastReading = 0;
+	
   for (byte i=0; i<NUM_INPUTS; i++)
   {
     if (channelEnabled[i])
-      parseSPCData(0);
+      parseSPCData(i);
   }
 
   if (dataMode == LOGGING_MODE)
   {
     if ((millis() - lastPrint) > 100)
     {
-			String line = getCSVLine();
-		  Serial.println(line);
+			//String line = getCSVLine();
+		  //Serial.println(line);
+			printCSVLine();
 
       lastPrint = millis();
     }
@@ -154,8 +156,27 @@ void loop()
   {
     if (!digitalRead(sample_pin))
     {
-			String line = getCSVLine();
-		  Serial.println(line);
+			lastTrigger = millis();
+			lastReading = readings[0];
+			
+			triggerReading(0);
+			
+			while (lastReading == readings[0])
+			{
+				parseSPCData(0);
+				delay(10);
+
+				if ((millis() - lastTrigger) > 1000)
+				{
+//					Serial.print("TRG: No data. ");
+//					Serial.println(bitIndex[0]);
+					break;
+				}
+			}
+			
+			//String line = getCSVLine();
+		  //Serial.println(line);
+			printCSVLine();
 
       while (!digitalRead(sample_pin))
         delay(100);
@@ -165,11 +186,30 @@ void loop()
   {
     if (!digitalRead(trigger_pin))
     {
-			String line = getCSVLine();
-		  Serial.println(line);
+			lastTrigger = millis();
+			lastReading = readings[0];
+			
+			triggerReading(0);
+			
+			while (lastReading == readings[0])
+			{
+				parseSPCData(0);
+				delay(10);
+
+				if ((millis() - lastTrigger) > 1000)
+				{
+					Serial.print("TRG: No data. ");
+					Serial.println(bitIndex[0]);
+					break;
+				}
+			}
+			
+			//String line = getCSVLine();
+		  //Serial.println(line);
+			printCSVLine();
 
       while (!digitalRead(trigger_pin))
-        delay(10);
+        delay(1);
     }
   }
   else if (dataMode == SDCARD_MODE)
@@ -274,6 +314,43 @@ void printCSVHeader()
   Serial.println(line);
 }
 
+void printCSVLine()
+{
+	long milliTime = millis();
+  Serial.print(milliTime, DEC);
+  Serial.print(", ");
+
+  for (byte i=0; i<NUM_INPUTS; i++)
+  {
+    if (channelEnabled[i])
+    {
+			printSPCDataString(i);
+      Serial.print(", ");
+    }
+  }
+
+	Serial.println();
+}
+
+void printSPCDataString(byte i)
+{
+  if (numberSign[i] == 8)
+    Serial.print("-");
+  else
+    Serial.print("+");
+
+  for (int j=0; j<6; j++)
+  {
+    if (6-j == decimalPoint[i])
+      Serial.print(".");
+    Serial.print(digits[i][j], DEC);
+  }
+  Serial.print(", ");
+	Serial.print(readings[i], DEC);
+}
+
+
+//this function seems to be killing our sketch.
 String getCSVLine()
 {
 	long milliTime = millis();
@@ -293,6 +370,7 @@ String getCSVLine()
   return out;
 }
 
+//this function seems to be killing our sketch
 String getSPCDataString(byte i)
 {
   String out;
@@ -346,109 +424,63 @@ void read_spc_5()
 
 void readSPCData(byte channel)
 {
-  byte dataBit = digitalRead(data_pins[channel]);
+	if (!digitalRead(clock_pins[channel]))
+	{
+ 	  byte dataBit = digitalRead(data_pins[channel]);
 
-  myBits[channel][bitIndex[channel]] = dataBit;
+	  byte myNibble = (bitIndex[channel] >> 2);
+	  byte myBit = (bitIndex[channel] % 4);
+	
+	  myNibbles[channel][myNibble] |= (dataBit << myBit);
 
-  byte myNibble = bitIndex[channel] / 4;
-  byte myBit = (bitIndex[channel] % 4);
-
-  myNibbles[channel][myNibble] |= (dataBit << myBit);
-
-  bitIndex[channel]++;
-
-  lastClock[channel] = millis();
-
-  if (bitIndex[channel] == 52)
-    digitalWrite(request_pins[channel], LOW);
+	  bitIndex[channel]++;
+	
+		if (bitIndex[channel] == 1)
+			digitalWrite(request_pins[channel], LOW);
+	}
 }
 
 byte parseSPCData(byte channel)
 {
-  if (channelEnabled[channel] && bitIndex[channel] == 52)
-  {
-    //    if (millis() - lastClock[channel] > 500)
-    //    {
-    //      resetSPCData(channel);
-    //	digitalWrite(status_pin, HIGH);
-    //	delay(1);
-    //  	digitalWrite(status_pin, LOW);
-    //    }
-
-    //  Serial.println("Raw:");
-    for (byte i=0; i<52; i++)
-    {
-      //if (i % 8 == 0 && i != 0)
-      // Serial.println();
-      // Serial.print(myBits[channel][i], BIN); 
-
-      byte myNibble = i / 4;
-      byte myBit = (i % 4);
-
-      //Serial.print(" - ");
-      // Serial.print(myNibble, DEC);
-      // Serial.print(",");
-      // Serial.print(myBit, DEC);
-      // Serial.println();
-
-      myNibbles[channel][myNibble] |= (myBits[channel][i] << myBit);
-    }
-    //  Serial.println();
-
-    /*
-  Serial.println("Nibbles:");
-     for (byte i=0; i<13; i++)
-     {
-     if (i % 2 == 0 && i != 0)
-     Serial.println();
-     
-     Serial.print(myNibbles[channel][i], BIN); 
-     }
-     Serial.println();
-     */
-    /*
-  if (bitIndex[channel] != 52)
-     {
-     Serial.print("Incorrect # of bits received (");
-     Serial.print(bitIndex[channel], DEC);
-     Serial.println(").");
-     
-     resetSPCData(channel);
-     return 1;
-     }
-     */
-
-    //  Serial.print("Preamble: ");
-    if (bitIndex[channel] > 16)
-    {
-      for (byte i=0; i<4; i++)
-      {
-        //  Serial.print(myNibbles[channel][i], HEX);
-
-        if (myNibbles[channel][i] != 0x0f)
-        {
-          //Serial.print("Incorrect preamble (");
-          //Serial.print(myNibbles[channel][i], BIN);
-          //Serial.println(").");
-
-          resetSPCData(channel);
-
-          digitalWrite(error_pin, HIGH);
-          delay(1);
-          digitalWrite(error_pin, LOW);
-
-					triggerReading(channel);
-					
-          return 2;
-        }
-      }
-      //Serial.println();
-    }
-
+  if (channelEnabled[channel])
+ 	{
     if (bitIndex[channel] == 52)
     {
-      //check the decimal point... its always a 3 and if we got bunk data, it will be wrong.
-      if (myNibbles[channel][11] == 3)
+	    //  Serial.print("Preamble: ");
+	    if (bitIndex[channel] > 16)
+	    {
+	      for (byte i=0; i<4; i++)
+	      {
+	        //  Serial.print(myNibbles[channel][i], HEX);
+
+	        if (myNibbles[channel][i] != 0x0f)
+	        {
+	          Serial.print("Incorrect preamble (");
+	          Serial.print(myNibbles[channel][i], BIN);
+	          Serial.println(").");
+
+	          digitalWrite(error_pin, HIGH);
+	          delay(1);
+	          digitalWrite(error_pin, LOW);
+
+	          resetSPCData(channel);
+						triggerReading(channel);
+
+	          return 2;
+	        }
+	      }
+	      //Serial.println();
+	    }
+
+//			for (byte i=0; i<13; i++)
+//			{
+//				Serial.print(myNibbles[channel][i], HEX);
+//				Serial.print("-");
+//			}
+//			Serial.println();
+
+      //check the decimal point... it needs to be 3
+      if (myNibbles[channel][11] >= 2 && myNibbles[channel][11] <= 4)
       {
         numberSign[channel] = myNibbles[channel][4];
 
@@ -464,17 +496,58 @@ byte parseSPCData(byte channel)
 
         readings[channel]++;
 
+				//Serial.println("Success.");
+
         digitalWrite(read_pin, HIGH);
         delay(1);
         digitalWrite(read_pin, LOW);
       }
+			else
+			{
+				Serial.print("Bad DP: ");
+				Serial.println(myNibbles[channel][11], DEC);
+			}
 
       resetSPCData(channel);
+
+			if (dataMode == LOGGING_MODE || dataMode == SDCARD_MODE)
+			{
+				triggerReading(channel);
+			}
     }
+		else if (bitIndex[channel] > 52)
+		{
+			Serial.print("TMI: ");
+			Serial.println(bitIndex[channel], DEC);
 
-		triggerReading(channel);
-  }
+			for (byte i=0; i<13; i++)
+			{
+				Serial.print(myNibbles[channel][i], HEX);
+				Serial.print("-");
+			}
+			Serial.println();
+			
+			resetSPCData(channel);
+		}
+/*
+	  else if ((millis() - lastClock[channel]) > 50 && bitIndex[channel] > 0)
+	  {
+			Serial.print("No data: ");
+			Serial.println(bitIndex[channel], DEC);
 
+			resetSPCData(channel);
+
+			digitalWrite(error_pin, HIGH);
+			delay(1);
+			digitalWrite(error_pin, LOW);
+
+			if (dataMode == LOGGING_MODE || dataMode == SDCARD_MODE)
+			{
+				triggerReading(channel);
+			}
+		}
+*/
+  }	
   return 0;
 }
 
@@ -483,8 +556,6 @@ void resetSPCData(byte channel)
   bitIndex[channel] = 0;
   for (byte i=0; i<13; i++)
     myNibbles[channel][i] = 0;
-  for (byte i=0; i<52; i++)
-    myBits[channel][i] = 0;
 }
 
 void triggerReading(byte channel)

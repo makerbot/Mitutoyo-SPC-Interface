@@ -2,31 +2,38 @@
 #include <SD.h>
 #include <stdio.h>
 
+//the various different modes available.
 #define SAMPLE_MODE 1
 #define TRIGGER_MODE 2
 #define LOGGING_MODE 3
 #define SDCARD_MODE 4
+#define SERIAL_MODE 5
 
+//default to manual sampling.
 byte dataMode = 1;
 
+//EEPROM address for mode storage
 #define MODE_ADDRESS 0
 
+//6 channel datalogger.  :)
 #define NUM_INPUTS 6
 
-const byte clock_interrupts[NUM_INPUTS] = {
-  1, 0, 5, 4, 3, 2}; // these are the interrupt ids.  actual pin #s are: 3, 2, 18, 19, 20, 21
-const byte clock_pins[NUM_INPUTS] = {
-  3, 2, 18, 19, 20, 21};
-const byte data_pins[NUM_INPUTS] = {
-  4, 15, 17, 23, 27, 29};
-const byte request_pins[NUM_INPUTS] = {
-  35, 36, 37, 38, 39, 40};
+// these are the I/Os and interrupts for each channel.
+const byte clock_interrupts[NUM_INPUTS] = { 1,  0,  5,  4,  3,  2  }; 
+const byte clock_pins[NUM_INPUTS] =       { 3,  2,  18, 19, 20, 21 };
+const byte data_pins[NUM_INPUTS] =        { 4,  15, 17, 23, 27, 29 };
+const byte request_pins[NUM_INPUTS] =     { 35, 36, 37, 38, 39, 40 };
 
+//which channels do we want to enable?  TODO: auto-detect which ports are connected.
+byte channelEnabled[NUM_INPUTS] = { 1,0,0,0,0,0 };
+
+//led status pins.
 const byte error_pin = 12;
 const byte read_pin = 11;
 const byte status_pin = 10;
 const byte mode_pin = 9;
 
+//button / interface pins
 const byte sample_pin = 46;
 const byte trigger_pin = 41;
 const byte chmod_pin = 45;
@@ -37,44 +44,34 @@ File dataFile;
 boolean sd_initialized = false;
 boolean sd_logging_enabled = false;
 
-unsigned long lastPrint = 0;
-
-//data from the input
+//temporary storage for the interrupt routine.
 volatile byte myNibbles[NUM_INPUTS][13];
-volatile byte bitIndex[NUM_INPUTS] = {
-  0,0,0,0,0,0};
+volatile byte bitIndex[NUM_INPUTS] = {0,0,0,0,0,0};
 
-byte channelEnabled[NUM_INPUTS] = {
-  1,0,0,0,0,0};
-
-byte numberSign[NUM_INPUTS] = {
-  0,0,0,0,0,0};
+//these are our output storage arrays
+byte numberSign[NUM_INPUTS] = {0,0,0,0,0,0};
 byte digits[NUM_INPUTS][6];
-byte decimalPoint[NUM_INPUTS] = {
-  0,0,0,0,0,0};
-byte units[NUM_INPUTS] = {
-  0,0,0,0,0,0};
+byte decimalPoint[NUM_INPUTS] = {0,0,0,0,0,0};
+byte units[NUM_INPUTS] = {0,0,0,0,0,0};
+byte ready[NUM_INPUTS] = {0,0,0,0,0,0};
 
-unsigned int readings[NUM_INPUTS] = {
-  0,0,0,0,0,0};
+//how many samples have we taken?
+unsigned int readings[NUM_INPUTS] = {0,0,0,0,0,0};
 
-volatile boolean sampleFlag = false;
+unsigned long lastPrint = 0;
 
 void setup()
 {
+	//start serial and print our header.
   Serial.begin(57600);
   Serial.println("MakerBot Mitutoyo SPC Logger v2.0");
 
-  dataMode = EEPROM.read(MODE_ADDRESS);
-	//Serial.print("EEPROM Read: ");
-	//Serial.print(MODE_ADDRESS, DEC);
-	//Serial.print(", ");
-	//Serial.println(dataMode, DEC);
-
+	//setup our input pins.
   pinMode(sample_pin, INPUT);
   pinMode(trigger_pin, INPUT);
   pinMode(chmod_pin, INPUT);
 
+	//attach interrupts on enabled channels.
   if (channelEnabled[0])
     attachInterrupt(clock_interrupts[0], read_spc_0, FALLING);
   if (channelEnabled[1])
@@ -88,15 +85,18 @@ void setup()
   if (channelEnabled[5])
     attachInterrupt(clock_interrupts[5], read_spc_5, FALLING);
 
+	//show some pretty lights to let the world know you're alive.
   fade_led(error_pin, 512);
   fade_led(read_pin, 512);
   fade_led(status_pin, 512);
   fade_led(mode_pin, 512);
 
+	//initialize all the pins for all the channels
   for (byte i=0; i<NUM_INPUTS; i++)
   {
     if (channelEnabled[i])
     {
+			//make sure our data is cleared
       resetSPCData(i);
 
       pinMode(clock_pins[i], INPUT);
@@ -106,27 +106,10 @@ void setup()
     }
   }
 
+	//what is our current mode?
+  dataMode = EEPROM.read(MODE_ADDRESS);
   update_data_mode();
-	if (dataMode != SDCARD_MODE)
-  	printCSVHeader();
-}
-
-void fade_led(byte pin, int milliseconds)
-{
-  int delayTime = milliseconds / (512);
-
-  for (byte i=0; i<255; i++)
-  {
-    analogWrite(pin, i);
-    delay(delayTime);
-  }
-
-  for (byte i=255; i>0; i--)
-  {
-    analogWrite(pin, i);
-    delay(delayTime);
-  }
-  analogWrite(pin, 0);
+  printCSVHeader();
 }
 
 void loop()
@@ -144,8 +127,6 @@ void loop()
   {
     if ((millis() - lastPrint) > 100)
     {
-			//String line = getCSVLine();
-		  //Serial.println(line);
 			printCSVLine();
 
       lastPrint = millis();
@@ -173,8 +154,6 @@ void loop()
 				}
 			}
 			
-			//String line = getCSVLine();
-		  //Serial.println(line);
 			printCSVLine();
 
       while (!digitalRead(sample_pin))
@@ -203,8 +182,6 @@ void loop()
 				}
 			}
 			
-			//String line = getCSVLine();
-		  //Serial.println(line);
 			printCSVLine();
 
       while (!digitalRead(trigger_pin))
@@ -308,6 +285,7 @@ void update_data_mode()
 	}
 }
 
+//format a header for printing.
 String getCSVHeader()
 {
   String out = "Milliseconds, ";
@@ -325,12 +303,14 @@ String getCSVHeader()
   return out;
 }
 
+//output the header to Serial
 void printCSVHeader()
 {
 	String line = getCSVHeader();
   Serial.println(line);
 }
 
+//format a single channel reading for printing.
 void printCSVLine()
 {
 	long milliTime = millis();
@@ -349,6 +329,7 @@ void printCSVLine()
 	Serial.println();
 }
 
+//output a single channel reading to Serial.
 void printSPCDataString(byte i)
 {
   if (numberSign[i] == 8)
@@ -367,7 +348,8 @@ void printSPCDataString(byte i)
 }
 
 
-//this function seems to be killing our sketch.
+//TODO: fix me.  This is killing our sketch.
+//get a CSV formatted line for printing.
 String getCSVLine()
 {
 	long milliTime = millis();
@@ -387,6 +369,7 @@ String getCSVLine()
   return out;
 }
 
+//TODO: fix me.  This is killing our sketch.
 //this function seems to be killing our sketch
 String getSPCDataString(byte i)
 {
@@ -409,86 +392,96 @@ String getSPCDataString(byte i)
   return out;
 }
 
+//redirect interrupt function for channel 1.
 void read_spc_0()
 {
   readSPCData(0);
 }
 
+//redirect interrupt function for channel 2.
 void read_spc_1()
 {
   readSPCData(1);
 }
 
+//redirect interrupt function for channel 3.
 void read_spc_2()
 {
   readSPCData(2);
 }
 
+//redirect interrupt function for channel 4.
 void read_spc_3()
 {
   readSPCData(3);
 }
 
+//redirect interrupt function for channel 5.
 void read_spc_4()
 {
   readSPCData(4);
 }
 
+//redirect interrupt function for channel 6.
 void read_spc_5()
 {
   readSPCData(5);
 }
 
+//main interrupt function for reading data from gauge.
 void readSPCData(byte channel)
 {
+	//this digital read is critical!  without it, you will sometimes get extra clocks.  BAD!
 	if (!digitalRead(clock_pins[channel]))
 	{
+		//turn off our request if this is the first time through.
+		if (bitIndex[channel] == 1)
+			digitalWrite(request_pins[channel], LOW);
+
+		//pulls in teh actual data bit.
  	  byte dataBit = digitalRead(data_pins[channel]);
 
+		//what bit and what nibble does this go into?
 	  byte myNibble = (bitIndex[channel] >> 2);
 	  byte myBit = (bitIndex[channel] % 4);
 	
+		//store it to the right bit/nibble.
 	  myNibbles[channel][myNibble] |= (dataBit << myBit);
 
+		//okay, we go ta new one!
 	  bitIndex[channel]++;
-	
-		if (bitIndex[channel] == 1)
-			digitalWrite(request_pins[channel], LOW);
 	}
 }
 
-byte parseSPCData(byte channel)
+//this looks through the data and pulls out relevant information.
+void parseSPCData(byte channel)
 {
+	//only look at channels that are enabled.
   if (channelEnabled[channel])
  	{
+		//did we get the appropriate # of bits?
     if (bitIndex[channel] == 52)
     {
-	    //  Serial.print("Preamble: ");
-	    if (bitIndex[channel] > 16)
-	    {
-	      for (byte i=0; i<4; i++)
-	      {
-	        //  Serial.print(myNibbles[channel][i], HEX);
+			//look at the first 4 nibbles:  they must all be 0xf or fail.
+      for (byte i=0; i<4; i++)
+      {
+        if (myNibbles[channel][i] != 0x0f)
+        {
+          Serial.print("ERR: Preamble (");
+          Serial.print(myNibbles[channel][i], BIN);
+          Serial.println(").");
 
-	        if (myNibbles[channel][i] != 0x0f)
-	        {
-	          Serial.print("Incorrect preamble (");
-	          Serial.print(myNibbles[channel][i], BIN);
-	          Serial.println(").");
+					flash_error_led();
 
-	          digitalWrite(error_pin, HIGH);
-	          delay(1);
-	          digitalWrite(error_pin, LOW);
+					//start over and do a new reading.
+          resetSPCData(channel);
+					triggerReading(channel);
 
-	          resetSPCData(channel);
-						triggerReading(channel);
+					return;
+        }
+      }
 
-	          return 2;
-	        }
-	      }
-	      //Serial.println();
-	    }
-
+//DEBUG OUTPUT FOR LOOKING AT RAW DATA.
 //			for (byte i=0; i<13; i++)
 //			{
 //				Serial.print(myNibbles[channel][i], HEX);
@@ -496,11 +489,12 @@ byte parseSPCData(byte channel)
 //			}
 //			Serial.println();
 
-      //check the decimal point... it needs to be 3
+      //check the decimal point... it can really only be between 2 and 4.  (eg: xxxx.yy, xxx.yyy, or xx.yyyy)
       if (myNibbles[channel][11] >= 2 && myNibbles[channel][11] <= 4)
       {
-        numberSign[channel] = myNibbles[channel][4];
+        numberSign[channel] = myNibbles[channel][4]; // 0 is positive, 8 is negative
 
+				//these are all just the actual digits as single numbers.  strange but true.
         digits[channel][0] = myNibbles[channel][5];
         digits[channel][1] = myNibbles[channel][6];
         digits[channel][2] = myNibbles[channel][7];
@@ -508,25 +502,24 @@ byte parseSPCData(byte channel)
         digits[channel][4] = myNibbles[channel][9];
         digits[channel][5] = myNibbles[channel][10];
 
-        decimalPoint[channel] = myNibbles[channel][11];
-        units[channel] = myNibbles[channel][12];
+        decimalPoint[channel] = myNibbles[channel][11]; // (2 = xxxx.yy, 3 = xxx.yyy, 4 = xx.yyyy)
+        units[channel] = myNibbles[channel][12]; // 0 = mm, 1 = inches
 
-        readings[channel]++;
-
-				//Serial.println("Success.");
-
-        digitalWrite(read_pin, HIGH);
-        delay(1);
-        digitalWrite(read_pin, LOW);
+        readings[channel]++; //counter for # of successful readings.
+				ready[channel] = 1; //we have a new reading ready for use.
+				
+				flash_read_led(); //show we have a winner.
       }
 			else
 			{
-				Serial.print("Bad DP: ");
+				//show the error.
+				Serial.print("ERR: Bad DP: ");
 				Serial.println(myNibbles[channel][11], DEC);
 			}
 
       resetSPCData(channel);
 
+			//TODO: move this to loop() and check on the ready variable.
 			if (dataMode == LOGGING_MODE || dataMode == SDCARD_MODE)
 			{
 				triggerReading(channel);
@@ -534,9 +527,11 @@ byte parseSPCData(byte channel)
     }
 		else if (bitIndex[channel] > 52)
 		{
-			Serial.print("TMI: ");
+			//we got too much information.  crap.
+			Serial.print("ERR: TMI: ");
 			Serial.println(bitIndex[channel], DEC);
 
+			//dump our input for debugging.
 			for (byte i=0; i<13; i++)
 			{
 				Serial.print(myNibbles[channel][i], HEX);
@@ -544,9 +539,11 @@ byte parseSPCData(byte channel)
 			}
 			Serial.println();
 			
+			//start fresh.
 			resetSPCData(channel);
 		}
 /*
+		//TODO: add a started millis() variable and check when the sample was started vs when it was finished.  if too long, we can time out.
 	  else if ((millis() - lastClock[channel]) > 50 && bitIndex[channel] > 0)
 	  {
 			Serial.print("No data: ");
@@ -565,21 +562,22 @@ byte parseSPCData(byte channel)
 		}
 */
   }	
-  return 0;
 }
 
+//get us back to a fresh slate for a new reading.
+//TODO: combine with trigger_reading?
 void resetSPCData(byte channel)
 {
+	//reset our data buffers.
   bitIndex[channel] = 0;
   for (byte i=0; i<13; i++)
     myNibbles[channel][i] = 0;
+
+	//clear our ready flag
+	ready[channel] = 0;
 }
 
-void triggerReading(byte channel)
-{
-	digitalWrite(request_pins[channel], HIGH);
-}
-
+//get our SD card ready for logging.
 void initialize_sdcard()
 {
   // make sure that the default chip select pin is set to
@@ -649,4 +647,43 @@ String generate_sd_filename()
   return fname;
 }
 */
+
+void triggerReading(byte channel)
+{
+	digitalWrite(request_pins[channel], HIGH);
+}
+
+void flash_read_led()
+{
+	digitalWrite(read_pin, HIGH);
+	delay(1);
+	digitalWrite(read_pin, LOW);
+}
+
+void flash_error_led()
+{
+	digitalWrite(error_pin, HIGH);
+	delay(1);
+	digitalWrite(error_pin, LOW);
+}
+
+//simple function to blink the LED.
+void fade_led(byte pin, int milliseconds)
+{
+  int delayTime = milliseconds / (512);
+
+  for (byte i=0; i<255; i++)
+  {
+    analogWrite(pin, i);
+    delay(delayTime);
+  }
+
+  for (byte i=255; i>0; i--)
+  {
+    analogWrite(pin, i);
+    delay(delayTime);
+  }
+  analogWrite(pin, 0);
+}
+
 

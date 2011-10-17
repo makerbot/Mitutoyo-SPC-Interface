@@ -71,8 +71,6 @@ void setup()
 	//Serial.print(", ");
 	//Serial.println(dataMode, DEC);
 
-  update_data_mode();
-
   pinMode(sample_pin, INPUT);
   pinMode(trigger_pin, INPUT);
   pinMode(chmod_pin, INPUT);
@@ -95,9 +93,6 @@ void setup()
   fade_led(status_pin, 512);
   fade_led(mode_pin, 512);
 
-	if (dataMode != SDCARD_MODE)
-  	printCSVHeader();
-
   for (byte i=0; i<NUM_INPUTS; i++)
   {
     if (channelEnabled[i])
@@ -110,6 +105,10 @@ void setup()
       digitalWrite(request_pins[i], LOW);
     }
   }
+
+  update_data_mode();
+	if (dataMode != SDCARD_MODE)
+  	printCSVHeader();
 }
 
 void fade_led(byte pin, int milliseconds)
@@ -286,9 +285,27 @@ void update_data_mode()
   else if (dataMode == TRIGGER_MODE)
     Serial.println("External Trigger Mode");
   else if (dataMode == LOGGING_MODE)
+	{
     Serial.println("Continuous Logging Mode");
+	  for (byte i=0; i<NUM_INPUTS; i++)
+	  {
+	    if (channelEnabled[i])
+	    {
+				triggerReading(i);
+			}
+		}
+	}
   else if (dataMode == SDCARD_MODE)
+	{
     Serial.println("SD Card Logging Mode");
+	  for (byte i=0; i<NUM_INPUTS; i++)
+	  {
+	    if (channelEnabled[i])
+	    {
+				triggerReading(i);
+			}
+		}
+	}
 }
 
 String getCSVHeader()

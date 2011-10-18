@@ -9,6 +9,9 @@
 #define SDCARD_MODE 4
 #define SERIAL_MODE 5
 
+//do we want debugging on or not?
+const byte debuggingEnabled = false;
+
 //default to manual sampling.
 byte dataMode = 1;
 
@@ -507,9 +510,12 @@ void parseSPCData(byte channel)
       {
         if (myNibbles[channel][i] != 0x0f)
         {
-          Serial.print("ERR: Preamble (");
-          Serial.print(myNibbles[channel][i], BIN);
-          Serial.println(").");
+					if (debuggingEnabled)
+					{
+	          Serial.print("ERR: Preamble (");
+	          Serial.print(myNibbles[channel][i], BIN);
+	          Serial.println(").");
+					}
 
 					flash_error_led();
 
@@ -520,13 +526,13 @@ void parseSPCData(byte channel)
         }
       }
 
-//DEBUG OUTPUT FOR LOOKING AT RAW DATA.
-//			for (byte i=0; i<13; i++)
-//			{
-//				Serial.print(myNibbles[channel][i], HEX);
-//				Serial.print("-");
-//			}
-//			Serial.println();
+			//DEBUG OUTPUT FOR LOOKING AT RAW DATA.
+			//			for (byte i=0; i<13; i++)
+			//			{
+			//				Serial.print(myNibbles[channel][i], HEX);
+			//				Serial.print("-");
+			//			}
+			//			Serial.println();
 
       //check the decimal point... it can really only be between 2 and 4.  (eg: xxxx.yy, xxx.yyy, or xx.yyyy)
       if (myNibbles[channel][11] >= 2 && myNibbles[channel][11] <= 4)
@@ -553,24 +559,37 @@ void parseSPCData(byte channel)
       }
 			else
 			{
-				//show the error.
-				Serial.print("ERR: Bad DP: ");
-				Serial.println(myNibbles[channel][11], DEC);
+				if (debuggingEnabled)
+				{
+					//show the error.
+					Serial.print("ERR: Bad DP: ");
+					Serial.println(myNibbles[channel][11], DEC);
+				}
+				
+				flash_error_led();
+
+				//start fresh.
+				triggerReading(channel);
 			}
     }
 		else if (bitIndex[channel] > 52)
 		{
-			//we got too much information.  crap.
-			Serial.print("ERR: TMI: ");
-			Serial.println(bitIndex[channel], DEC);
-
-			//dump our input for debugging.
-			for (byte i=0; i<13; i++)
+			if(debuggingEnabled)
 			{
-				Serial.print(myNibbles[channel][i], HEX);
-				Serial.print("-");
+				//we got too much information.  crap.
+				Serial.print("ERR: TMI: ");
+				Serial.println(bitIndex[channel], DEC);
+
+				//dump our input for debugging.
+				for (byte i=0; i<13; i++)
+				{
+					Serial.print(myNibbles[channel][i], HEX);
+					Serial.print("-");
+				}
+				Serial.println();
 			}
-			Serial.println();
+			
+			flash_error_led();
 			
 			//start fresh.
 			triggerReading(channel);

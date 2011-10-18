@@ -24,8 +24,8 @@ const byte clock_pins[NUM_INPUTS] =       { 3,  2,  18, 19, 20, 21 };
 const byte data_pins[NUM_INPUTS] =        { 4,  15, 17, 23, 27, 29 };
 const byte request_pins[NUM_INPUTS] =     { 35, 36, 37, 38, 39, 40 };
 
-//which channels do we want to enable?  TODO: auto-detect which ports are connected.
-byte channelEnabled[NUM_INPUTS] = { 1,0,0,0,0,0 };
+//which channels do we want to enable?
+byte channelEnabled[NUM_INPUTS] = { 1,1,1,1,1,1 };
 
 //led status pins.
 const byte error_pin = 12;
@@ -62,30 +62,23 @@ unsigned long lastPrint = 0;
 
 void setup()
 {
-	//start serial and print our header.
+	//start serial comms.
   Serial.begin(57600);
-  Serial.println("MakerBot Mitutoyo SPC Logger v2.0");
 
-	//setup our input pins.
+	//manual sample button... input w/ internal pullup
   pinMode(sample_pin, INPUT);
+	digitalWrite(sample_pin, HIGH);
+	
+	//external trigger pin... input w/ internal pullup
   pinMode(trigger_pin, INPUT);
+	digitalWrite(trigger_pin, HIGH);
+	
+	//external trigger pin... input w/ internal pullup.
   pinMode(chmod_pin, INPUT);
-
-	//attach interrupts on enabled channels.
-  if (channelEnabled[0])
-    attachInterrupt(clock_interrupts[0], read_spc_0, FALLING);
-  if (channelEnabled[1])
-    attachInterrupt(clock_interrupts[1], read_spc_1, FALLING);
-  if (channelEnabled[2])
-    attachInterrupt(clock_interrupts[2], read_spc_2, FALLING);
-  if (channelEnabled[3])
-    attachInterrupt(clock_interrupts[3], read_spc_3, FALLING);
-  if (channelEnabled[4])
-    attachInterrupt(clock_interrupts[4], read_spc_4, FALLING);
-  if (channelEnabled[5])
-    attachInterrupt(clock_interrupts[5], read_spc_5, FALLING);
-
+	digitalWrite(chmod_pin, HIGH);
+	
 	//show some pretty lights to let the world know you're alive.
+	//TODO: trim to 500ms or so total.
   fade_led(error_pin, 512);
   fade_led(read_pin, 512);
   fade_led(status_pin, 512);
@@ -94,17 +87,25 @@ void setup()
 	//initialize all the pins for all the channels
   for (byte i=0; i<NUM_INPUTS; i++)
   {
-    if (channelEnabled[i])
-    {
-			//make sure our data is cleared
-      resetSPCData(i);
+		//make sure our data is cleared
+		resetSPCData(i);
 
-      pinMode(clock_pins[i], INPUT);
-      pinMode(data_pins[i], INPUT);
-      pinMode(request_pins[i], OUTPUT);
-      digitalWrite(request_pins[i], LOW);
-    }
+		//input pin, internal pullup enabled.
+		pinMode(clock_pins[i], INPUT);
+		digitalWrite(clock_pins[i], HIGH);
+
+		//input pin, internal pullup enabled.
+		pinMode(data_pins[i], INPUT);
+		digitalWrite(data_pins[i], HIGH);
+		
+		//output pins, disabled initially.
+		pinMode(request_pins[i], OUTPUT);
+		digitalWrite(request_pins[i], LOW);
   }
+
+	//print header and scan gauges.
+  Serial.println("MakerBot Mitutoyo SPC Logger v3");
+	detectGauges();
 
 	//what is our current mode?
   dataMode = EEPROM.read(MODE_ADDRESS);
@@ -112,11 +113,52 @@ void setup()
   printCSVHeader();
 }
 
-void loop()
+void detectGauges()
 {
-	unsigned long lastTrigger = 0;
-	int lastReading = 0;
+  //get all our interrupts going. 
+	attachInterrupt(clock_interrupts[0], read_spc_0, FALLING);
+	attachInterrupt(clock_interrupts[1], read_spc_1, FALLING);
+	attachInterrupt(clock_interrupts[2], read_spc_2, FALLING);
+	attachInterrupt(clock_interrupts[3], read_spc_3, FALLING);
+	attachInterrupt(clock_interrupts[4], read_spc_4, FALLING);
+	attachInterrupt(clock_interrupts[5], read_spc_5, FALLING);
+
+	//start a reading on each channel.
+	triggerAllReadings();
 	
+	//give time for results to come back.
+	delay(250);
+	
+	//check for results.
+	for (byte i=0; i<NUM_INPUTS; i++)
+		parseSPCData(i);
+
+	//loop through and find out what we got.  disable any failures.
+	Serial.print("Detected Channels: ");
+	for (byte i=0; i<NUM_INPUTS; i++)
+	{
+		if (ready[i])
+		{
+			Serial.print(i+1, DEC);
+			Serial.print(',');
+		}
+		else
+		{
+			channelEnabled[i] = 0;
+			detachInterrupt(clock_interrupts[i]);
+		}
+		
+		readings[i] = 0; // reset our readings counter.
+	}
+	
+	Serial.println();
+}
+
+unsigned long lastTrigger = 0;
+int lastReading = 0;
+	
+void loop()
+{	
   for (byte i=0; i<NUM_INPUTS; i++)
   {
     if (channelEnabled[i])
@@ -124,111 +166,104 @@ void loop()
   }
 
   if (dataMode == LOGGING_MODE)
-  {
-    if ((millis() - lastPrint) > 100)
-    {
-			printCSVLine();
-
-      lastPrint = millis();
-    }
-  }
+		loggingLoop();
   else if(dataMode == SAMPLE_MODE)
-  {
-    if (!digitalRead(sample_pin))
-    {
-			lastTrigger = millis();
-			lastReading = readings[0];
-			
-			triggerReading(0);
-			
-			while (lastReading == readings[0])
-			{
-				parseSPCData(0);
-				delay(10);
-
-				if ((millis() - lastTrigger) > 1000)
-				{
-//					Serial.print("TRG: No data. ");
-//					Serial.println(bitIndex[0]);
-					break;
-				}
-			}
-			
-			printCSVLine();
-
-      while (!digitalRead(sample_pin))
-        delay(100);
-    }
-  }
+		triggerLoop(sample_pin);
   else if (dataMode == TRIGGER_MODE)
-  {
-    if (!digitalRead(trigger_pin))
-    {
-			lastTrigger = millis();
-			lastReading = readings[0];
-			
-			triggerReading(0);
-			
-			while (lastReading == readings[0])
-			{
-				parseSPCData(0);
-				delay(10);
-
-				if ((millis() - lastTrigger) > 1000)
-				{
-					Serial.print("TRG: No data. ");
-					Serial.println(bitIndex[0]);
-					break;
-				}
-			}
-			
-			printCSVLine();
-
-      while (!digitalRead(trigger_pin))
-        delay(1);
-    }
-  }
+		triggerLoop(trigger_pin);
   else if (dataMode == SDCARD_MODE)
-  {
-    if (sd_logging_enabled)
-    {
-      // if the file is available, write to it:
-      if (dataFile)
-      {
-        if ((millis() - lastPrint) > 100)
-        {
-          dataFile.println(getCSVLine());
-          lastPrint = millis();
-        }
+		sdLoop();
+		
+	checkModeButton();
+}
 
-        digitalWrite(status_pin, HIGH);
-        delay(1);
-        digitalWrite(status_pin, LOW);
-      }
-      else
-      {
-        initialize_sdcard();
+void loggingLoop()
+{
+	if (allReady())
+	{
+		printCSVLine();
 
-        if (!dataFile)
-          delay(250);
-      }			
-    }
+		triggerAllReadings();
+	}
+}
 
-    //sample pin will turn logging on or off.
-    if (!digitalRead(sample_pin))
-    {
-      sd_logging_enabled = !sd_logging_enabled;
+void triggerLoop(byte my_pin)
+{
+	if (!digitalRead(my_pin))
+	{
+		lastTrigger = millis();
+		lastReading = readings[0];
+		
+		triggerAllReadings();
 
-      if (sd_logging_enabled)
-        initialize_sdcard();
-      else if (dataFile)
-        dataFile.close();
+		while (!allReady())
+		{
+			for (byte i=0; i<NUM_INPUTS; i++)
+			{
+				if (!ready[i])
+					parseSPCData(i);
+			}
+			delay(10);
 
-      while (!digitalRead(sample_pin))
-        delay(100);
-    }
-  }
+			if ((millis() - lastTrigger) > 1000)
+			{
+//				Serial.print("TRG: No data. ");
+//				Serial.println(bitIndex[0]);
+				break;
+			}
+		}
 
+		if (allReady())
+		printCSVLine();
+
+     while (!digitalRead(my_pin))
+       delay(100);
+   }
+}
+
+void sdLoop()
+{
+   if (sd_logging_enabled)
+   {
+     // if the file is available, write to it:
+     if (dataFile)
+     {
+       if ((millis() - lastPrint) > 100)
+       {
+         dataFile.println(getCSVLine());
+         lastPrint = millis();
+       }
+
+       digitalWrite(status_pin, HIGH);
+       delay(1);
+       digitalWrite(status_pin, LOW);
+     }
+     else
+     {
+       initialize_sdcard();
+
+       if (!dataFile)
+         delay(250);
+     }			
+   }
+
+   //sample pin will turn logging on or off.
+   if (!digitalRead(sample_pin))
+   {
+     sd_logging_enabled = !sd_logging_enabled;
+
+     if (sd_logging_enabled)
+       initialize_sdcard();
+     else if (dataFile)
+       dataFile.close();
+
+     while (!digitalRead(sample_pin))
+       delay(100);
+   }
+}
+
+void checkModeButton()
+{
   if (!digitalRead(chmod_pin))
   {
     dataMode++;
@@ -264,23 +299,21 @@ void update_data_mode()
   else if (dataMode == LOGGING_MODE)
 	{
     Serial.println("Continuous Logging Mode");
+
 	  for (byte i=0; i<NUM_INPUTS; i++)
-	  {
-	    if (channelEnabled[i])
-	    {
+  	{
+    	if (channelEnabled[i])
 				triggerReading(i);
-			}
 		}
 	}
   else if (dataMode == SDCARD_MODE)
 	{
     Serial.println("SD Card Logging Mode");
+
 	  for (byte i=0; i<NUM_INPUTS; i++)
-	  {
-	    if (channelEnabled[i])
-	    {
+  	{
+    	if (channelEnabled[i])
 				triggerReading(i);
-			}
 		}
 	}
 }
@@ -474,7 +507,6 @@ void parseSPCData(byte channel)
 					flash_error_led();
 
 					//start over and do a new reading.
-          resetSPCData(channel);
 					triggerReading(channel);
 
 					return;
@@ -508,6 +540,8 @@ void parseSPCData(byte channel)
         readings[channel]++; //counter for # of successful readings.
 				ready[channel] = 1; //we have a new reading ready for use.
 				
+				resetSPCData(channel); //clear out our data so we stop parsing it.
+				
 				flash_read_led(); //show we have a winner.
       }
 			else
@@ -515,14 +549,6 @@ void parseSPCData(byte channel)
 				//show the error.
 				Serial.print("ERR: Bad DP: ");
 				Serial.println(myNibbles[channel][11], DEC);
-			}
-
-      resetSPCData(channel);
-
-			//TODO: move this to loop() and check on the ready variable.
-			if (dataMode == LOGGING_MODE || dataMode == SDCARD_MODE)
-			{
-				triggerReading(channel);
 			}
     }
 		else if (bitIndex[channel] > 52)
@@ -540,7 +566,7 @@ void parseSPCData(byte channel)
 			Serial.println();
 			
 			//start fresh.
-			resetSPCData(channel);
+			triggerReading(channel);
 		}
 /*
 		//TODO: add a started millis() variable and check when the sample was started vs when it was finished.  if too long, we can time out.
@@ -572,9 +598,6 @@ void resetSPCData(byte channel)
   bitIndex[channel] = 0;
   for (byte i=0; i<13; i++)
     myNibbles[channel][i] = 0;
-
-	//clear our ready flag
-	ready[channel] = 0;
 }
 
 //get our SD card ready for logging.
@@ -648,8 +671,38 @@ String generate_sd_filename()
 }
 */
 
+boolean allReady()
+{
+	boolean allReady = true;
+	
+  for (byte i=0; i<NUM_INPUTS; i++)
+  {
+    if (channelEnabled[i] && !ready[i])
+		{
+			allReady = false;
+			break;
+		}
+  }
+
+	return allReady;
+}
+
+void triggerAllReadings()
+{
+  for (byte i=0; i<NUM_INPUTS; i++)
+	{
+  	if (channelEnabled[i])
+			triggerReading(i);
+	}
+}
+
 void triggerReading(byte channel)
 {
+	resetSPCData(channel);
+	
+	//clear our ready flag
+	ready[channel] = 0;
+
 	digitalWrite(request_pins[channel], HIGH);
 }
 
@@ -685,5 +738,3 @@ void fade_led(byte pin, int milliseconds)
   }
   analogWrite(pin, 0);
 }
-
-

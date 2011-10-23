@@ -175,6 +175,8 @@ void loop()
 		triggerLoop(trigger_pin);
   else if (dataMode == SDCARD_MODE)
 		sdLoop();
+	else if (dataMode == SERIAL_MODE)
+		serialLoop();
 		
 	checkModeButton();
 }
@@ -272,13 +274,33 @@ void sdLoop()
 	}
 }
 
+//TODO: test this and implement continuous and sd card logging control through serial.
+void serialLoop()
+{
+	int ib = 0;
+	
+	while (Serial.available() > 0)
+	{
+		ib = Serial.read();
+		
+		if (ib == '1')
+			update_data_mode(1);
+		else if (ib == '2')
+			update_data_mode(2);
+		else if (ib == '3')
+			update_data_mode(3);
+		else if (ib == '4')
+			update_data_mode(4);
+		else if (ib == 'T' || ib == 't')
+			triggerAllReadings();
+	}
+}
+
 void checkModeButton()
 {
   if (!digitalRead(chmod_pin))
   {
-    dataMode++;
-
-    update_data_mode();
+    update_data_mode(0);
 
 		//Serial.print("EEPROM Write: ");
 		//Serial.print(MODE_ADDRESS, DEC);
@@ -297,10 +319,15 @@ void checkModeButton()
   }
 }
 
-void update_data_mode()
+void update_data_mode(byte new_mode)
 {
-  if (dataMode > 4)
-    dataMode = 1;
+	if (new_mode == 0)
+    dataMode++;
+	else
+		dataMode = new_mode;
+	
+	if (dataMode > 5)
+	  dataMode = 1;
 
   if (dataMode == SAMPLE_MODE)
     Serial.println("Manual Sampling Mode");
@@ -314,6 +341,7 @@ void update_data_mode()
   	{
     	if (channelEnabled[i])
 				triggerReading(i);
+				
 		}
 	}
   else if (dataMode == SDCARD_MODE)
@@ -325,6 +353,10 @@ void update_data_mode()
     	if (channelEnabled[i])
 				triggerReading(i);
 		}
+	}
+	else if (dataMode == SERIAL_MODE)
+	{
+		Serial.println("Serial Interface Mode");
 	}
 }
 

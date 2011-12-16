@@ -111,7 +111,7 @@ void setup()
 
 	//what is our current mode?
   dataMode = EEPROM.read(MODE_ADDRESS);
-  update_data_mode();
+  update_data_mode(dataMode);
   SerialPrintCSVHeader();
 }
 

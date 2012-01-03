@@ -314,11 +314,11 @@ void serialLoop()
 			update_data_mode(3);
 		else if (ib == '4')
 			update_data_mode(4);
-		else if (ib == 'T' || ib == 't')
+		else if (ib == 'T')
 			triggerAllReadings();
-		else if (ib == 'A' || ib == 'a')
+		else if (ib == 'A')
 			activate_sd_logging();
-		else if (ib == 'D' || ib == 'd')
+		else if (ib == 'D')
 			deactivate_sd_logging();
 	}
 }

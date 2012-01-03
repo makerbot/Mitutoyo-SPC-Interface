@@ -160,13 +160,15 @@ unsigned long lastTrigger = 0;
 int lastReading = 0;
 	
 void loop()
-{	
+{
+	//every time through, check to see if we're got new data.
   for (byte i=0; i<NUM_INPUTS; i++)
   {
     if (channelEnabled[i])
       parseSPCData(i);
   }
 
+	//each different sampling mode has its own subroutine.
   if (dataMode == LOGGING_MODE)
 		loggingLoop();
   else if(dataMode == SAMPLE_MODE)
@@ -175,12 +177,16 @@ void loop()
 		triggerLoop(trigger_pin);
   else if (dataMode == SDCARD_MODE)
 		sdLoop();
-	else if (dataMode == SERIAL_MODE)
+	
+	//keep serial available at all times... so we can control the device.
+	if (dataMode == SERIAL_MODE || Serial.available() > 0)
 		serialLoop();
-		
+
+	//any request to switch modes?
 	checkModeButton();
 }
 
+//this is continuous mode... so every time all the gauges are ready, lets show them and do a new loop.
 void loggingLoop()
 {
 	if (allReady())
@@ -191,6 +197,7 @@ void loggingLoop()
 	}
 }
 
+//this is trigger mode.  we only sample every time the trigger pin itself is taken low.
 void triggerLoop(byte my_pin)
 {
 	if (!digitalRead(my_pin))
@@ -254,27 +261,43 @@ void sdLoop()
 		sd_logging_enabled = !sd_logging_enabled;
 
 		if (sd_logging_enabled)
-		{
-			Serial.print("SD: logging activated @ ");
-			Serial.println(millis(), DEC);
-
-			initialize_sdcard();
-			SDPrintCSVHeader();
-		}
-		else if (dataFile)
-		{
-			Serial.print("SD: logging deactivated @ ");
-			Serial.println(millis(), DEC);
-
-			dataFile.close();
-		}
+			activate_sd_logging();
+		else
+			deactivate_sd_logging();
 
 		while (!digitalRead(sample_pin))
 			delay(100);
 	}
 }
 
-//TODO: test this and implement continuous and sd card logging control through serial.
+void activate_sd_logging()
+{
+	Serial.print("SD: logging activated @ ");
+	Serial.println(millis(), DEC);
+
+	initialize_sdcard();
+	SDPrintCSVHeader();	
+	
+	sd_logging_enabled = true;
+}
+
+void deactivate_sd_logging()
+{
+	if (dataFile)
+	{
+		Serial.print("SD: logging deactivated @ ");
+		Serial.println(millis(), DEC);
+
+		dataFile.close();
+	}
+	else
+	{
+		Serial.print("SD: cannot deactivate, not yet activated. ");			
+	}
+	
+	sd_logging_enabled = false;
+}
+
 void serialLoop()
 {
 	int ib = 0;
@@ -293,6 +316,10 @@ void serialLoop()
 			update_data_mode(4);
 		else if (ib == 'T' || ib == 't')
 			triggerAllReadings();
+		else if (ib == 'A' || ib == 'a')
+			activate_sd_logging();
+		else if (ib == 'D' || ib == 'd')
+			deactivate_sd_logging();
 	}
 }
 
